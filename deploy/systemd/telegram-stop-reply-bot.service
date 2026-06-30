@@ -1,0 +1,17 @@
+[Unit]
+Description=telegram-stop-reply-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/telegram-stop-reply-bot
+EnvironmentFile=/opt/telegram-stop-reply-bot/.env
+ExecStart=/opt/telegram-stop-reply-bot/telegram-stop-reply-bot
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

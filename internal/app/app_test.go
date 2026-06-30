@@ -69,26 +69,23 @@ func TestProcessMessageViolationWarningDisabled(t *testing.T) {
 
 	app.processMessage(context.Background(), newViolationReplyMessage())
 
-	if len(client.deletes) != 1 {
-		t.Fatalf("expected 1 delete call, got %d", len(client.deletes))
-	}
-	if client.deletes[0].messageID != 100 {
-		t.Fatalf("expected violating message to be deleted first, got message %d", client.deletes[0].messageID)
+	if len(client.deletes) != 1 || client.deletes[0].messageID != 100 {
+		t.Fatalf("expected only violating message to be deleted, got %+v", client.deletes)
 	}
 	if len(client.sends) != 0 {
-		t.Fatalf("expected no warning message, got %d send calls", len(client.sends))
+		t.Fatalf("expected no warning message, got %+v", client.sends)
 	}
 	if len(*scheduledDelays) != 0 {
-		t.Fatalf("expected no scheduled warning deletion, got %d", len(*scheduledDelays))
+		t.Fatalf("expected no scheduled deletion, got %v", *scheduledDelays)
 	}
 }
 
-func TestProcessMessageViolationWarningPlain(t *testing.T) {
+func TestProcessMessageViolationWarningTemporary(t *testing.T) {
 	app, client, scheduledDelays := newTestApp(
 		Config{
 			WarningTTL:                    5 * time.Second,
 			ViolationWarningEnabled:       true,
-			ViolationWarningMentionTarget: false,
+			ViolationWarningMentionTarget: true,
 		},
 		[]rules.RuleKey{{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}},
 		nil,
@@ -97,67 +94,27 @@ func TestProcessMessageViolationWarningPlain(t *testing.T) {
 	app.processMessage(context.Background(), newViolationReplyMessage())
 
 	if len(client.deletes) != 2 {
-		t.Fatalf("expected 2 delete calls, got %d", len(client.deletes))
+		t.Fatalf("expected violation delete plus warning cleanup, got %+v", client.deletes)
 	}
-	if client.deletes[0].messageID != 100 {
-		t.Fatalf("expected violating message to be deleted first, got message %d", client.deletes[0].messageID)
-	}
-	if client.deletes[1].messageID != 900 {
-		t.Fatalf("expected warning message to be deleted after ttl, got message %d", client.deletes[1].messageID)
+	if client.deletes[0].messageID != 100 || client.deletes[1].messageID != 900 {
+		t.Fatalf("unexpected delete order: %+v", client.deletes)
 	}
 	if len(client.sends) != 1 {
-		t.Fatalf("expected 1 warning message, got %d", len(client.sends))
+		t.Fatalf("expected warning message, got %+v", client.sends)
 	}
-	if client.sends[0].text != violationWarningText {
-		t.Fatalf("unexpected warning text: got %q want %q", client.sends[0].text, violationWarningText)
+	if client.sends[0].text != "Ответ пользователю Protected недоступен." {
+		t.Fatalf("unexpected warning text: %q", client.sends[0].text)
 	}
-	if len(client.sends[0].entities) != 0 {
-		t.Fatalf("expected plain warning without entities, got %d entities", len(client.sends[0].entities))
+	if len(client.sends[0].entities) != 1 {
+		t.Fatalf("expected protected-user mention in warning, got %+v", client.sends[0].entities)
 	}
+	assertEntityUserID(t, client.sends[0].entities[0], 10)
 	if len(*scheduledDelays) != 1 || (*scheduledDelays)[0] != 5*time.Second {
-		t.Fatalf("expected warning deletion scheduled after 5s, got %v", *scheduledDelays)
+		t.Fatalf("expected temporary warning ttl, got %v", *scheduledDelays)
 	}
 }
 
-func TestProcessMessageViolationWarningMentionsProtectedUserOnReply(t *testing.T) {
-	app, client, scheduledDelays := newTestApp(
-		Config{
-			WarningTTL:                    5 * time.Second,
-			ViolationWarningEnabled:       true,
-			ViolationWarningMentionTarget: true,
-		},
-		[]rules.RuleKey{{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}},
-		nil,
-	)
-
-	app.processMessage(context.Background(), newViolationReplyMessage())
-
-	assertWarningMentionsProtectedUser(t, client, 10)
-	if len(*scheduledDelays) != 1 || (*scheduledDelays)[0] != 5*time.Second {
-		t.Fatalf("expected warning deletion scheduled after 5s, got %v", *scheduledDelays)
-	}
-}
-
-func TestProcessMessageViolationWarningMentionsProtectedUserOnMention(t *testing.T) {
-	app, client, scheduledDelays := newTestApp(
-		Config{
-			WarningTTL:                    5 * time.Second,
-			ViolationWarningEnabled:       true,
-			ViolationWarningMentionTarget: true,
-		},
-		[]rules.RuleKey{{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}},
-		[]rules.KnownUser{{UserID: 10, Username: "protected_user", FirstName: "Protected"}},
-	)
-
-	app.processMessage(context.Background(), newViolationMentionMessage())
-
-	assertWarningMentionsProtectedUser(t, client, 10)
-	if len(*scheduledDelays) != 1 || (*scheduledDelays)[0] != 5*time.Second {
-		t.Fatalf("expected warning deletion scheduled after 5s, got %v", *scheduledDelays)
-	}
-}
-
-func TestProcessMessageReplyStopCommandNotDeletedWhenUnblocked(t *testing.T) {
+func TestProcessMessageNormalReplyCommandSendsPermanentResult(t *testing.T) {
 	app, client, scheduledDelays := newTestApp(
 		Config{WarningTTL: 5 * time.Second},
 		nil,
@@ -167,72 +124,89 @@ func TestProcessMessageReplyStopCommandNotDeletedWhenUnblocked(t *testing.T) {
 	app.processMessage(context.Background(), newReplyStopCommandMessage(10, 20, 30))
 
 	if containsDeletedMessage(client.deletes, 100) {
-		t.Fatal("expected normal reply stop command message to remain in chat")
+		t.Fatal("expected original command message to remain in chat")
 	}
-	if len(client.sends) != 1 || client.sends[0].text != restrictionEnabledText {
-		t.Fatalf("expected enabled confirmation message, got %+v", client.sends)
+	if len(client.sends) != 1 {
+		t.Fatalf("expected one permanent result message, got %+v", client.sends)
 	}
-	if len(client.deletes) != 1 || client.deletes[0].messageID != 900 {
-		t.Fatalf("expected only bot confirmation message cleanup, got %+v", client.deletes)
+	if client.sends[0].text != "✅ Ограничение включено: Boris больше не может отвечать пользователю Sofiia." {
+		t.Fatalf("unexpected command result text: %q", client.sends[0].text)
 	}
-	if len(*scheduledDelays) != 1 || (*scheduledDelays)[0] != 5*time.Second {
-		t.Fatalf("expected only bot confirmation message to be scheduled for ttl cleanup, got %v", *scheduledDelays)
+	assertMessageMentions(t, client.sends[0], 20, 10)
+	if len(*scheduledDelays) != 0 {
+		t.Fatalf("expected no ttl cleanup for permanent result message, got %v", *scheduledDelays)
 	}
-	if !app.rules.HasActiveRule(rules.RuleKey{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}) {
-		t.Fatal("expected reply stop command to enable B -> A rule")
-	}
-}
-
-func TestProcessMessageMentionStopCommandEnablesRuleAndKeepsMessage(t *testing.T) {
-	app, client, scheduledDelays := newTestApp(
-		Config{WarningTTL: 5 * time.Second},
-		nil,
-		[]rules.KnownUser{{UserID: 20, Username: "blocked_user", FirstName: "Blocked"}},
-	)
-
-	app.processMessage(context.Background(), newMentionStopCommandMessage(10, 30, "@blocked_user бот стоп", "blocked_user", 20))
-
-	if containsDeletedMessage(client.deletes, 100) {
-		t.Fatal("expected normal mention stop command message to remain in chat")
-	}
-	if !app.rules.HasActiveRule(rules.RuleKey{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}) {
-		t.Fatal("expected mention stop command to enable B -> A rule")
-	}
-	if len(client.sends) != 1 || client.sends[0].text != restrictionEnabledText {
-		t.Fatalf("expected enabled confirmation message, got %+v", client.sends)
-	}
-	if len(client.deletes) != 1 || client.deletes[0].messageID != 900 {
-		t.Fatalf("expected only bot confirmation message cleanup, got %+v", client.deletes)
-	}
-	if len(*scheduledDelays) != 1 {
-		t.Fatalf("expected confirmation ttl cleanup to be scheduled once, got %v", *scheduledDelays)
+	if containsDeletedMessage(client.deletes, 900) {
+		t.Fatal("expected permanent result message to stay in chat")
 	}
 }
 
-func TestProcessMessageMentionStopCommandUnknownUsername(t *testing.T) {
+func TestProcessMessageMentionCommandSendsPermanentResult(t *testing.T) {
+	app, client, scheduledDelays := newTestApp(
+		Config{WarningTTL: 5 * time.Second},
+		nil,
+		[]rules.KnownUser{{UserID: 20, Username: "blocked_user", FirstName: "Boris"}},
+	)
+
+	app.processMessage(context.Background(), newMentionStopCommandMessage(10, 30, "@blocked_user бот стоп", "blocked_user"))
+
+	if containsDeletedMessage(client.deletes, 100) {
+		t.Fatal("expected original mention command message to remain in chat")
+	}
+	if len(client.sends) != 1 {
+		t.Fatalf("expected one permanent result message, got %+v", client.sends)
+	}
+	if client.sends[0].text != "✅ Ограничение включено: Boris больше не может отвечать пользователю Sofiia." {
+		t.Fatalf("unexpected command result text: %q", client.sends[0].text)
+	}
+	assertMessageMentions(t, client.sends[0], 20, 10)
+	if len(*scheduledDelays) != 0 {
+		t.Fatalf("expected no ttl cleanup for permanent result message, got %v", *scheduledDelays)
+	}
+}
+
+func TestProcessMessageDisableRuleSendsPermanentResult(t *testing.T) {
+	app, client, scheduledDelays := newTestApp(
+		Config{WarningTTL: 5 * time.Second},
+		[]rules.RuleKey{{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}},
+		nil,
+	)
+
+	app.processMessage(context.Background(), newReplyStopCommandMessage(10, 20, 30))
+
+	if len(client.sends) != 1 {
+		t.Fatalf("expected one permanent result message, got %+v", client.sends)
+	}
+	if client.sends[0].text != "✅ Ограничение снято: Boris снова может отвечать пользователю Sofiia." {
+		t.Fatalf("unexpected disabled result text: %q", client.sends[0].text)
+	}
+	assertMessageMentions(t, client.sends[0], 20, 10)
+	if len(*scheduledDelays) != 0 {
+		t.Fatalf("expected no ttl cleanup for permanent disable result, got %v", *scheduledDelays)
+	}
+}
+
+func TestProcessMessageUnknownMentionCommandRemainsTemporary(t *testing.T) {
 	app, client, scheduledDelays := newTestApp(
 		Config{WarningTTL: 5 * time.Second},
 		nil,
 		nil,
 	)
 
-	app.processMessage(context.Background(), newMentionStopCommandMessage(10, 30, "@unknown бот стоп", "unknown", 20))
+	app.processMessage(context.Background(), newMentionStopCommandMessage(10, 30, "@unknown бот стоп", "unknown"))
 
-	if containsDeletedMessage(client.deletes, 100) {
-		t.Fatal("expected unknown-target mention command message to remain in chat")
-	}
 	if len(client.sends) != 1 || client.sends[0].text != userResolveFailedText {
-		t.Fatalf("expected unknown-user error message, got %+v", client.sends)
-	}
-	if len(client.deletes) != 1 || client.deletes[0].messageID != 900 {
-		t.Fatalf("expected only bot error message cleanup, got %+v", client.deletes)
+		t.Fatalf("expected temporary unknown-user message, got %+v", client.sends)
 	}
 	if len(*scheduledDelays) != 1 || (*scheduledDelays)[0] != 5*time.Second {
-		t.Fatalf("expected error message ttl cleanup to be scheduled once, got %v", *scheduledDelays)
+		t.Fatalf("expected ttl cleanup for temporary unknown-user message, got %v", *scheduledDelays)
+	}
+	if !containsDeletedMessage(client.deletes, 900) {
+		t.Fatal("expected temporary unknown-user message to be deleted")
 	}
 }
 
-func TestProcessMessageReverseMentionStopCommandDeletesOriginalSilently(t *testing.T) {
+func TestProcessMessageBlockedUserStopCommandDeletesOriginalButKeepsResult(t *testing.T) {
 	app, client, scheduledDelays := newTestApp(
 		Config{
 			WarningTTL:                    5 * time.Second,
@@ -240,25 +214,26 @@ func TestProcessMessageReverseMentionStopCommandDeletesOriginalSilently(t *testi
 			ViolationWarningMentionTarget: true,
 		},
 		[]rules.RuleKey{{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}},
-		[]rules.KnownUser{{UserID: 10, Username: "protected_user", FirstName: "Protected"}},
+		[]rules.KnownUser{{UserID: 10, Username: "protected_user", FirstName: "Sofiia"}},
 	)
 
-	app.processMessage(context.Background(), newMentionStopCommandMessage(20, 30, "@protected_user бот стоп", "protected_user", 10))
+	app.processMessage(context.Background(), newMentionStopCommandMessage(20, 30, "@protected_user бот стоп", "protected_user"))
 
-	if !app.rules.HasActiveRule(rules.RuleKey{ChatID: 30, ProtectedUserID: 20, BlockedUserID: 10}) {
-		t.Fatal("expected reverse mention stop command to enable A -> B rule")
-	}
 	if !containsDeletedMessage(client.deletes, 100) {
-		t.Fatal("expected self-violating reverse command message to be deleted immediately")
+		t.Fatal("expected self-violating command message to be deleted immediately")
 	}
-	if len(client.sends) != 1 || client.sends[0].text != restrictionEnabledText {
-		t.Fatalf("expected only confirmation message, got %+v", client.sends)
+	if len(client.sends) != 1 {
+		t.Fatalf("expected one permanent result message, got %+v", client.sends)
 	}
-	if len(client.sends[0].entities) != 0 {
-		t.Fatalf("expected no violation warning mention entities, got %+v", client.sends[0].entities)
+	if client.sends[0].text != "✅ Ограничение включено: Sofiia больше не может отвечать пользователю Boris." {
+		t.Fatalf("unexpected reverse command result text: %q", client.sends[0].text)
 	}
-	if len(*scheduledDelays) != 1 {
-		t.Fatalf("expected only confirmation message ttl cleanup, got %v", *scheduledDelays)
+	assertMessageMentions(t, client.sends[0], 10, 20)
+	if len(*scheduledDelays) != 0 {
+		t.Fatalf("expected no ttl cleanup for permanent reverse command result, got %v", *scheduledDelays)
+	}
+	if containsDeletedMessage(client.deletes, 900) {
+		t.Fatal("expected permanent reverse command result message to stay in chat")
 	}
 }
 
@@ -303,51 +278,28 @@ func newViolationReplyMessage() *telegram.Message {
 	}
 }
 
-func newViolationMentionMessage() *telegram.Message {
-	msg := &telegram.Message{
-		MessageID: 100,
-		Chat: &telegram.Chat{
-			ID: 30,
-		},
-		From: &telegram.User{
-			ID:        20,
-			FirstName: "Blocked",
-		},
-		Text: "привет @protected_user",
-	}
-	msg.Entities = []telegram.MessageEntity{
-		{
-			Type:   "mention",
-			Offset: utf16Length("привет "),
-			Length: utf16Length("@protected_user"),
-		},
-	}
-	return msg
-}
-
 func newReplyStopCommandMessage(fromID, replyToID, chatID int64) *telegram.Message {
-	msg := &telegram.Message{
+	return &telegram.Message{
 		MessageID: 100,
 		Chat: &telegram.Chat{
 			ID: chatID,
 		},
 		From: &telegram.User{
 			ID:        fromID,
-			FirstName: "Sender",
+			FirstName: map[int64]string{10: "Sofiia", 20: "Boris"}[fromID],
 		},
 		Text: "Бот стоп",
 		ReplyToMessage: &telegram.Message{
 			MessageID: 101,
 			From: &telegram.User{
 				ID:        replyToID,
-				FirstName: "Target",
+				FirstName: map[int64]string{10: "Sofiia", 20: "Boris"}[replyToID],
 			},
 		},
 	}
-	return msg
 }
 
-func newMentionStopCommandMessage(fromID, chatID int64, text, username string, targetID int64) *telegram.Message {
+func newMentionStopCommandMessage(fromID, chatID int64, text, username string) *telegram.Message {
 	msg := &telegram.Message{
 		MessageID: 100,
 		Chat: &telegram.Chat{
@@ -355,7 +307,7 @@ func newMentionStopCommandMessage(fromID, chatID int64, text, username string, t
 		},
 		From: &telegram.User{
 			ID:        fromID,
-			FirstName: "Sender",
+			FirstName: map[int64]string{10: "Sofiia", 20: "Boris"}[fromID],
 		},
 		Text: text,
 	}
@@ -370,44 +322,27 @@ func newMentionStopCommandMessage(fromID, chatID int64, text, username string, t
 		},
 	}
 
-	if targetID != 0 {
-		msg.Entities[0].User = &telegram.User{ID: targetID, Username: username}
-	}
-
 	return msg
 }
 
-func assertWarningMentionsProtectedUser(t *testing.T, client *fakeTelegramClient, protectedUserID int64) {
+func assertMessageMentions(t *testing.T, message sendCall, blockedUserID, protectedUserID int64) {
 	t.Helper()
 
-	if len(client.deletes) != 2 {
-		t.Fatalf("expected 2 delete calls, got %d", len(client.deletes))
+	if len(message.entities) != 2 {
+		t.Fatalf("expected 2 text_mention entities, got %+v", message.entities)
 	}
-	if client.deletes[0].messageID != 100 {
-		t.Fatalf("expected violating message to be deleted first, got message %d", client.deletes[0].messageID)
-	}
-	if client.deletes[1].messageID != 900 {
-		t.Fatalf("expected warning message to be deleted after ttl, got message %d", client.deletes[1].messageID)
-	}
-	if len(client.sends) != 1 {
-		t.Fatalf("expected 1 warning message, got %d", len(client.sends))
-	}
-	if client.sends[0].text != violationMentionLabel+", "+violationWarningText {
-		t.Fatalf("unexpected warning text: got %q", client.sends[0].text)
-	}
-	if len(client.sends[0].entities) != 1 {
-		t.Fatalf("expected 1 text_mention entity, got %d", len(client.sends[0].entities))
-	}
+	assertEntityUserID(t, message.entities[0], blockedUserID)
+	assertEntityUserID(t, message.entities[1], protectedUserID)
+}
 
-	entity := client.sends[0].entities[0]
+func assertEntityUserID(t *testing.T, entity telegram.MessageEntity, userID int64) {
+	t.Helper()
+
 	if entity.Type != "text_mention" {
-		t.Fatalf("expected text_mention entity, got %q", entity.Type)
+		t.Fatalf("expected text_mention entity, got %+v", entity)
 	}
-	if entity.Offset != 0 || entity.Length != utf16Length(violationMentionLabel) {
-		t.Fatalf("unexpected entity span: offset=%d length=%d", entity.Offset, entity.Length)
-	}
-	if entity.User == nil || entity.User.ID != protectedUserID {
-		t.Fatalf("expected entity user ID %d, got %+v", protectedUserID, entity.User)
+	if entity.User == nil || entity.User.ID != userID {
+		t.Fatalf("expected entity user %d, got %+v", userID, entity.User)
 	}
 }
 

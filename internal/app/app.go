@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf16"
 
@@ -13,13 +14,17 @@ import (
 )
 
 const (
-	telegramRequestTimeout     = 5 * time.Second
-	restrictionEnabledText     = "Ограничение включено."
-	restrictionDisabledText    = "Ограничение снято."
-	restrictionUnavailableText = "Для этого пользователя ограничение недоступно."
-	userResolveFailedText      = "Не удалось определить пользователя."
-	violationWarningText       = "У вас нет права отвечать на сообщения этого пользователя."
-	violationMentionLabel      = "Пользователь"
+	telegramRequestTimeout      = 5 * time.Second
+	restrictionUnavailableText  = "Для этого пользователя ограничение недоступно."
+	userResolveFailedText       = "Не удалось определить пользователя."
+	violationWarningText        = "Ответ пользователю недоступен."
+	commandEnabledPrefixText    = "✅ Ограничение включено: "
+	commandEnabledSuffixText    = " больше не может отвечать пользователю "
+	commandDisabledPrefixText   = "✅ Ограничение снято: "
+	commandDisabledSuffixText   = " снова может отвечать пользователю "
+	commandResultTerminatorText = "."
+	protectedUserFallbackName   = "пользователю"
+	blockedUserFallbackName     = "пользователь"
 )
 
 type telegramClient interface {
@@ -149,9 +154,9 @@ func (a *App) handleStopCommand(ctx context.Context, msg *telegram.Message, comm
 	case result.BlockedUserImmune:
 		a.sendTemporaryMessage(msg.Chat.ID, restrictionUnavailableText, nil)
 	case result.Enabled:
-		a.sendTemporaryMessage(msg.Chat.ID, restrictionEnabledText, nil)
+		a.sendCommandResultMessage(msg.Chat.ID, true, commandMatch.TargetUser, msg.From)
 	default:
-		a.sendTemporaryMessage(msg.Chat.ID, restrictionDisabledText, nil)
+		a.sendCommandResultMessage(msg.Chat.ID, false, commandMatch.TargetUser, msg.From)
 	}
 
 	a.logger.Info(
@@ -173,7 +178,28 @@ func (a *App) sendViolationWarning(chatID int64, violation rules.Violation) {
 	a.sendTemporaryMessage(chatID, text, entities)
 }
 
+func (a *App) sendCommandResultMessage(chatID int64, enabled bool, blockedUser, protectedUser *telegram.User) {
+	text, entities := buildCommandResultMessage(enabled, blockedUser, protectedUser)
+	a.sendPersistentMessage(chatID, text, entities)
+}
+
 func (a *App) sendTemporaryMessage(chatID int64, text string, entities []telegram.MessageEntity) {
+	message, err := a.sendMessage(chatID, text, entities)
+	if err != nil {
+		a.logger.Warn("send temporary message failed", "error", err, "chat_id", chatID)
+		return
+	}
+
+	a.scheduleMessageDeletion(chatID, message.MessageID, a.cfg.WarningTTL)
+}
+
+func (a *App) sendPersistentMessage(chatID int64, text string, entities []telegram.MessageEntity) {
+	if _, err := a.sendMessage(chatID, text, entities); err != nil {
+		a.logger.Warn("send persistent message failed", "error", err, "chat_id", chatID)
+	}
+}
+
+func (a *App) sendMessage(chatID int64, text string, entities []telegram.MessageEntity) (telegram.Message, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), telegramRequestTimeout)
 	defer cancel()
 
@@ -188,11 +214,10 @@ func (a *App) sendTemporaryMessage(chatID int64, text string, entities []telegra
 		message, err = a.client.SendMessageWithEntities(ctx, chatID, text, entities)
 	}
 	if err != nil {
-		a.logger.Warn("send temporary message failed", "error", err, "chat_id", chatID)
-		return
+		return telegram.Message{}, err
 	}
 
-	a.scheduleMessageDeletion(chatID, message.MessageID, a.cfg.WarningTTL)
+	return message, nil
 }
 
 func (a *App) scheduleMessageDeletion(chatID, messageID int64, delay time.Duration) {
@@ -235,22 +260,105 @@ func buildViolationWarning(violation rules.Violation, mentionTarget bool) (strin
 		return violationWarningText, nil
 	}
 
-	mentionedUser := *violation.ProtectedUser
-	if mentionedUser.FirstName == "" {
-		mentionedUser.FirstName = violationMentionLabel
+	builder := newMessageBuilder()
+	builder.appendText("Ответ пользователю ")
+	builder.appendUser(violation.ProtectedUser, protectedUserFallbackName)
+	builder.appendText(" недоступен.")
+
+	return builder.text(), builder.entities
+}
+
+func buildCommandResultMessage(enabled bool, blockedUser, protectedUser *telegram.User) (string, []telegram.MessageEntity) {
+	builder := newMessageBuilder()
+	if enabled {
+		builder.appendText(commandEnabledPrefixText)
+	} else {
+		builder.appendText(commandDisabledPrefixText)
+	}
+	builder.appendUser(blockedUser, blockedUserFallbackName)
+	if enabled {
+		builder.appendText(commandEnabledSuffixText)
+	} else {
+		builder.appendText(commandDisabledSuffixText)
+	}
+	builder.appendUser(protectedUser, protectedUserFallbackName)
+	builder.appendText(commandResultTerminatorText)
+
+	return builder.text(), builder.entities
+}
+
+type messageBuilder struct {
+	builder    strings.Builder
+	entities   []telegram.MessageEntity
+	utf16Count int
+}
+
+func newMessageBuilder() *messageBuilder {
+	return &messageBuilder{
+		entities: make([]telegram.MessageEntity, 0, 2),
+	}
+}
+
+func (b *messageBuilder) appendText(text string) {
+	b.builder.WriteString(text)
+	b.utf16Count += utf16Length(text)
+}
+
+func (b *messageBuilder) appendUser(user *telegram.User, fallback string) {
+	displayName := formatUserDisplayName(user, fallback)
+	offset := b.utf16Count
+	b.builder.WriteString(displayName)
+	b.utf16Count += utf16Length(displayName)
+
+	if user == nil || user.ID == 0 {
+		return
 	}
 
-	text := violationMentionLabel + ", " + violationWarningText
-	entities := []telegram.MessageEntity{
-		{
-			Type:   "text_mention",
-			Offset: 0,
-			Length: utf16Length(violationMentionLabel),
-			User:   &mentionedUser,
-		},
+	mentionedUser := cloneTelegramUser(user)
+	if mentionedUser.FirstName == "" && mentionedUser.LastName == "" && mentionedUser.Username == "" {
+		mentionedUser.FirstName = displayName
 	}
 
-	return text, entities
+	b.entities = append(b.entities, telegram.MessageEntity{
+		Type:   "text_mention",
+		Offset: offset,
+		Length: utf16Length(displayName),
+		User:   mentionedUser,
+	})
+}
+
+func (b *messageBuilder) text() string {
+	return b.builder.String()
+}
+
+func formatUserDisplayName(user *telegram.User, fallback string) string {
+	if user == nil {
+		return fallback
+	}
+
+	fullName := strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
+	if fullName != "" {
+		return fullName
+	}
+	if firstName := strings.TrimSpace(user.FirstName); firstName != "" {
+		return firstName
+	}
+	if username := strings.TrimSpace(user.Username); username != "" {
+		if strings.HasPrefix(username, "@") {
+			return username
+		}
+		return "@" + username
+	}
+	return fallback
+}
+
+func cloneTelegramUser(user *telegram.User) *telegram.User {
+	if user == nil {
+		return nil
+	}
+
+	cloned := *user
+	return &cloned
 }
 
 func utf16Length(text string) int {

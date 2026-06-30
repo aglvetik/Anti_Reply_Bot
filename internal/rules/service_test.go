@@ -205,6 +205,9 @@ func TestDetectViolationBlockedReply(t *testing.T) {
 	if violation.RuleKey != key {
 		t.Fatalf("unexpected violation key: got %+v want %+v", violation.RuleKey, key)
 	}
+	if violation.BlockedUser == nil || violation.BlockedUser.ID != 20 {
+		t.Fatalf("expected blocked user to be resolved from sender, got %+v", violation.BlockedUser)
+	}
 	if violation.ProtectedUser == nil || violation.ProtectedUser.ID != 10 {
 		t.Fatalf("expected protected user to be resolved from reply target, got %+v", violation.ProtectedUser)
 	}
@@ -228,6 +231,9 @@ func TestDetectViolationBlockedUsernameMention(t *testing.T) {
 	}
 	if violation.RuleKey != key {
 		t.Fatalf("unexpected violation key: got %+v want %+v", violation.RuleKey, key)
+	}
+	if violation.BlockedUser == nil || violation.BlockedUser.ID != 20 {
+		t.Fatalf("expected blocked user to be resolved from sender, got %+v", violation.BlockedUser)
 	}
 	if violation.ProtectedUser == nil || violation.ProtectedUser.ID != 10 || violation.ProtectedUser.Username != "TargetUser" {
 		t.Fatalf("expected protected user to be resolved from cache, got %+v", violation.ProtectedUser)
@@ -259,6 +265,9 @@ func TestDetectViolationBlockedTextMention(t *testing.T) {
 	}
 	if violation.RuleKey != key {
 		t.Fatalf("unexpected violation key: got %+v want %+v", violation.RuleKey, key)
+	}
+	if violation.BlockedUser == nil || violation.BlockedUser.ID != 20 {
+		t.Fatalf("expected blocked user to be resolved from sender, got %+v", violation.BlockedUser)
 	}
 	if violation.ProtectedUser == nil || violation.ProtectedUser.ID != 10 || violation.ProtectedUser.FirstName != "Target" {
 		t.Fatalf("expected protected user to be resolved from cache, got %+v", violation.ProtectedUser)

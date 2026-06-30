@@ -25,6 +25,7 @@ type ToggleResult struct {
 
 type Violation struct {
 	RuleKey       RuleKey
+	BlockedUser   *telegram.User
 	ProtectedUser *telegram.User
 }
 
@@ -134,6 +135,7 @@ func (s *Service) detectViolation(msg *telegram.Message, skipValidCommands bool)
 		if s.cache.IsRuleActive(key) {
 			return Violation{
 				RuleKey:       key,
+				BlockedUser:   cloneUser(msg.From),
 				ProtectedUser: cloneUser(reply.From),
 			}, true
 		}
@@ -148,6 +150,7 @@ func (s *Service) detectViolation(msg *telegram.Message, skipValidCommands bool)
 		if s.cache.IsRuleActive(key) {
 			return Violation{
 				RuleKey:       key,
+				BlockedUser:   cloneUser(msg.From),
 				ProtectedUser: s.lookupProtectedUser(protectedUserID),
 			}, true
 		}

@@ -17,7 +17,8 @@ const (
 	telegramRequestTimeout      = 5 * time.Second
 	restrictionUnavailableText  = "Для этого пользователя ограничение недоступно."
 	userResolveFailedText       = "Не удалось определить пользователя."
-	violationWarningText        = "Ответ пользователю недоступен."
+	violationWarningText        = "Пользователь запретил вам отвечать на его сообщения."
+	violationWarningSuffixText  = ", пользователь запретил вам отвечать на его сообщения."
 	commandEnabledPrefixText    = "✅ Ограничение включено: "
 	commandEnabledSuffixText    = " больше не может отвечать пользователю "
 	commandDisabledPrefixText   = "✅ Ограничение снято: "
@@ -256,14 +257,13 @@ func chatID(msg *telegram.Message) int64 {
 }
 
 func buildViolationWarning(violation rules.Violation, mentionTarget bool) (string, []telegram.MessageEntity) {
-	if !mentionTarget || violation.ProtectedUser == nil || violation.ProtectedUser.ID == 0 {
+	if !mentionTarget || violation.BlockedUser == nil || violation.BlockedUser.ID == 0 {
 		return violationWarningText, nil
 	}
 
 	builder := newMessageBuilder()
-	builder.appendText("Ответ пользователю ")
-	builder.appendUser(violation.ProtectedUser, protectedUserFallbackName)
-	builder.appendText(" недоступен.")
+	builder.appendUser(violation.BlockedUser, "Пользователь")
+	builder.appendText(violationWarningSuffixText)
 
 	return builder.text(), builder.entities
 }

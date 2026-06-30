@@ -109,6 +109,53 @@ func TestHandleStopCommandReverseRuleEnable(t *testing.T) {
 	}
 }
 
+func TestHandleStopCommandMentionEnable(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{}
+	knownUsers := []KnownUser{{UserID: 20, Username: "blocked_user"}}
+	service := NewService(store, NewCache(nil, knownUsers, nil))
+	msg := newMentionCommandMessage(10, 30, "@blocked_user бот стоп", "@blocked_user", 20)
+
+	result, err := service.HandleStopCommand(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleStopCommand() error = %v", err)
+	}
+
+	key := RuleKey{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}
+	if !result.Enabled {
+		t.Fatal("expected mention rule to be enabled")
+	}
+	if !service.cache.IsRuleActive(key) {
+		t.Fatal("expected mention rule to be active")
+	}
+}
+
+func TestHandleStopCommandMentionToggleDisable(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{}
+	knownUsers := []KnownUser{{UserID: 20, Username: "blocked_user"}}
+	service := NewService(store, NewCache(nil, knownUsers, nil))
+	msg := newMentionCommandMessage(10, 30, "@blocked_user бот стоп", "@blocked_user", 20)
+
+	if _, err := service.HandleStopCommand(context.Background(), msg); err != nil {
+		t.Fatalf("initial HandleStopCommand() error = %v", err)
+	}
+	result, err := service.HandleStopCommand(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("second HandleStopCommand() error = %v", err)
+	}
+
+	key := RuleKey{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}
+	if result.Enabled {
+		t.Fatal("expected repeated mention command to disable the same direction")
+	}
+	if service.cache.IsRuleActive(key) {
+		t.Fatal("expected mention rule to be disabled")
+	}
+}
+
 func TestHandleStopCommandRepeatedSameDirectionDisablesOnlyThatDirection(t *testing.T) {
 	t.Parallel()
 
@@ -305,6 +352,29 @@ func TestHandleStopCommandRuleAgainstImmuneUserIgnored(t *testing.T) {
 	}
 }
 
+func TestHandleStopCommandMentionAgainstImmuneUserIgnored(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{}
+	immune := map[int64]struct{}{20: {}}
+	knownUsers := []KnownUser{{UserID: 20, Username: "immune_user"}}
+	service := NewService(store, NewCache(nil, knownUsers, immune))
+	msg := newMentionCommandMessage(10, 30, "@immune_user бот стоп", "@immune_user", 20)
+
+	result, err := service.HandleStopCommand(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleStopCommand() error = %v", err)
+	}
+
+	key := RuleKey{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}
+	if !result.BlockedUserImmune {
+		t.Fatal("expected immune target result flag")
+	}
+	if service.cache.IsRuleActive(key) {
+		t.Fatal("expected immune mention rule to stay inactive")
+	}
+}
+
 func TestDetectViolationIgnoresMessagesFromBots(t *testing.T) {
 	t.Parallel()
 
@@ -316,5 +386,25 @@ func TestDetectViolationIgnoresMessagesFromBots(t *testing.T) {
 
 	if _, ok := service.DetectViolation(msg); ok {
 		t.Fatal("expected bot messages to be ignored")
+	}
+}
+
+func TestDetectCommandViolationAllowsReverseCommandDelete(t *testing.T) {
+	t.Parallel()
+
+	key := RuleKey{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}
+	knownUsers := []KnownUser{{UserID: 10, Username: "protected_user", FirstName: "Protected"}}
+	service := NewService(nil, NewCache([]RuleKey{key}, knownUsers, nil))
+	msg := newMentionCommandMessage(20, 30, "@protected_user бот стоп", "@protected_user", 10)
+
+	if _, ok := service.DetectViolation(msg); ok {
+		t.Fatal("expected valid mention stop command to bypass normal violation detection")
+	}
+	violation, ok := service.DetectCommandViolation(msg)
+	if !ok {
+		t.Fatal("expected reverse mention command to be detectable as self-violation")
+	}
+	if violation.ProtectedUser == nil || violation.ProtectedUser.ID != 10 {
+		t.Fatalf("expected protected user 10 for self-violation, got %+v", violation.ProtectedUser)
 	}
 }

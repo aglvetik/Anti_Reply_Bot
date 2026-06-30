@@ -2,6 +2,7 @@ package rules
 
 import (
 	"testing"
+	"unicode/utf16"
 
 	"telegram-stop-reply-bot/internal/telegram"
 )
@@ -64,6 +65,90 @@ func TestIsStopCommandRejectsSelfReply(t *testing.T) {
 	}
 }
 
+func TestMatchStopCommandValidMentionPrefix(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(nil, NewCache(nil, []KnownUser{{UserID: 200, Username: "someuser"}}, nil))
+	msg := newMentionCommandMessage(100, 300, "@someuser БОТ   СТОП", "@someuser", 200)
+
+	match := service.MatchStopCommand(msg)
+	if !match.IsValid() {
+		t.Fatal("expected mention stop command to be accepted")
+	}
+	if match.TargetUser == nil || match.TargetUser.ID != 200 {
+		t.Fatalf("expected mention target user 200, got %+v", match.TargetUser)
+	}
+}
+
+func TestMatchStopCommandValidMentionSuffix(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(nil, NewCache(nil, []KnownUser{{UserID: 200, Username: "someuser"}}, nil))
+	msg := newMentionCommandMessage(100, 300, "БОТ СТОП @someuser", "@someuser", 200)
+
+	match := service.MatchStopCommand(msg)
+	if !match.IsValid() {
+		t.Fatal("expected suffix mention stop command to be accepted")
+	}
+}
+
+func TestMatchStopCommandUnknownMention(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(nil, NewCache(nil, nil, nil))
+	msg := newMentionCommandMessage(100, 300, "@unknown бот стоп", "@unknown", 0)
+
+	match := service.MatchStopCommand(msg)
+	if match.Status != StopCommandUnknownTarget {
+		t.Fatalf("expected unknown-target mention status, got %v", match.Status)
+	}
+}
+
+func TestMatchStopCommandMultipleMentionsInvalid(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(nil, NewCache(nil, []KnownUser{
+		{UserID: 200, Username: "one"},
+		{UserID: 201, Username: "two"},
+	}, nil))
+	msg := newMessage(100, 300, "@one @two бот стоп")
+	msg.Entities = []telegram.MessageEntity{
+		{Type: "mention", Offset: 0, Length: utf16Len("@one")},
+		{Type: "mention", Offset: utf16Len("@one "), Length: utf16Len("@two")},
+	}
+
+	match := service.MatchStopCommand(msg)
+	if match.IsCommand() {
+		t.Fatalf("expected multiple mention command to be invalid, got %+v", match)
+	}
+}
+
+func TestMatchStopCommandSupportsTextMention(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(nil, NewCache(nil, nil, nil))
+	msg := newMessage(100, 300, "Пользователь бот стоп")
+	msg.Entities = []telegram.MessageEntity{
+		{
+			Type:   "text_mention",
+			Offset: 0,
+			Length: utf16Len("Пользователь"),
+			User: &telegram.User{
+				ID:        200,
+				FirstName: "Some",
+			},
+		},
+	}
+
+	match := service.MatchStopCommand(msg)
+	if !match.IsValid() {
+		t.Fatal("expected text_mention stop command to be accepted")
+	}
+	if match.TargetUser == nil || match.TargetUser.ID != 200 {
+		t.Fatalf("expected text_mention target user 200, got %+v", match.TargetUser)
+	}
+}
+
 func newMessage(fromID, chatID int64, text string) *telegram.Message {
 	return &telegram.Message{
 		MessageID: 1,
@@ -86,4 +171,33 @@ func newReplyMessage(fromID, replyToID, chatID int64, text string) *telegram.Mes
 		},
 	}
 	return msg
+}
+
+func newMentionCommandMessage(fromID, chatID int64, text, mention string, targetID int64) *telegram.Message {
+	msg := newMessage(fromID, chatID, text)
+	offset := utf16Len(text[:findSubstring(text, mention)])
+	msg.Entities = []telegram.MessageEntity{
+		{
+			Type:   "mention",
+			Offset: offset,
+			Length: utf16Len(mention),
+		},
+	}
+	if targetID != 0 {
+		msg.Entities[0].User = &telegram.User{ID: targetID}
+	}
+	return msg
+}
+
+func findSubstring(text, substring string) int {
+	for index := range text {
+		if len(text[index:]) >= len(substring) && text[index:index+len(substring)] == substring {
+			return index
+		}
+	}
+	return -1
+}
+
+func utf16Len(text string) int {
+	return len(utf16.Encode([]rune(text)))
 }

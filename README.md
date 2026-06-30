@@ -25,20 +25,23 @@ Rule key:
 
 Example flow:
 
-1. User A replies to User B with `Бот стоп`.
+1. User A replies to User B with `Бот стоп`, or sends `@b_username бот стоп`.
 2. A new rule `B -> A` is enabled in the current chat.
 3. User B can no longer reply to User A.
 4. User B can no longer mention or text-mention User A.
-5. If User A repeats the same reply command to User B, only the same direction `B -> A` is disabled.
-6. If User B later replies to User A with `Бот стоп`, that creates or toggles the reverse rule `A -> B` independently.
+5. If User A repeats the same command against User B, only the same direction `B -> A` is disabled.
+6. If User B later uses `Бот стоп` against User A, that creates or toggles the reverse rule `A -> B` independently.
 
 Important behavior:
 
 - A valid `Бот стоп` command is always processed before violation detection.
 - This means a user who is currently blocked from replying can still reply with `Бот стоп` to create or toggle the reverse direction.
 - The command only works for text messages that normalize to `бот стоп`.
-- The command must be a reply.
-- The sender and reply target must both exist, must be different users, and must not be bots.
+- The command can target a user either by reply or by exactly one Telegram mention or text-mention entity in the same text message.
+- Mention-form commands support both `@username бот стоп` and `бот стоп @username` as long as the remaining text normalizes to `бот стоп`.
+- Mention-form commands resolve `@username` through the known-user cache. If the bot cannot resolve the mentioned username, it sends a short temporary `Не удалось определить пользователя.` message and does not create a rule.
+- The sender and target must both exist, must be different users, and must not be bots.
+- A normal command message stays in chat. The bot only deletes the original command message when that command itself violates an already active rule, and it does that only after processing the toggle.
 
 Normalization rules:
 
@@ -52,6 +55,8 @@ Valid examples:
 - `бот стоп`
 - `БОТ СТОП`
 - `  бот   стоп  `
+- `@username бот стоп`
+- `бот стоп @username`
 
 ## Immune users
 
@@ -235,11 +240,11 @@ The bot uses structured `slog` JSON logs and intentionally does not log full mes
 Unit tests cover:
 
 - command normalization
-- valid and invalid `Бот стоп` command handling
+- reply-based and mention-based `Бот стоп` command handling
 - toggle enable and disable behavior
 - reverse-direction independence
 - reply, username mention, and text mention violations
-- command bypass of violation detection
+- command bypass of normal violation detection plus post-processing self-violation deletion
 - immune user behavior
 - bot-message ignore behavior
 

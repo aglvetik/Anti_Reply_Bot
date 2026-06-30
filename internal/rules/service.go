@@ -35,8 +35,19 @@ func NewService(store Store, cache *Cache) *Service {
 	}
 }
 
+func (s *Service) MatchStopCommand(msg *telegram.Message) StopCommandMatch {
+	if match := matchReplyStopCommand(msg); match.IsValid() {
+		return match
+	}
+	return matchMentionStopCommand(s.cache, msg)
+}
+
 func (s *Service) IsStopCommand(msg *telegram.Message) bool {
-	return IsStopCommand(msg)
+	return s.MatchStopCommand(msg).IsValid()
+}
+
+func (s *Service) HasActiveRule(key RuleKey) bool {
+	return s.cache.IsRuleActive(key)
 }
 
 func (s *Service) UpdateKnownUsers(ctx context.Context, msg *telegram.Message) error {
@@ -59,14 +70,15 @@ func (s *Service) UpdateKnownUsers(ctx context.Context, msg *telegram.Message) e
 }
 
 func (s *Service) HandleStopCommand(ctx context.Context, msg *telegram.Message) (ToggleResult, error) {
-	if !IsStopCommand(msg) {
+	match := s.MatchStopCommand(msg)
+	if !match.IsValid() {
 		return ToggleResult{}, fmt.Errorf("message is not a valid stop command")
 	}
 
 	key := RuleKey{
 		ChatID:          msg.Chat.ID,
 		ProtectedUserID: msg.From.ID,
-		BlockedUserID:   msg.ReplyToMessage.From.ID,
+		BlockedUserID:   match.TargetUser.ID,
 	}
 
 	if s.cache.IsImmune(key.BlockedUserID) {
@@ -92,10 +104,21 @@ func (s *Service) HandleStopCommand(ctx context.Context, msg *telegram.Message) 
 }
 
 func (s *Service) DetectViolation(msg *telegram.Message) (Violation, bool) {
+	return s.detectViolation(msg, true)
+}
+
+func (s *Service) DetectCommandViolation(msg *telegram.Message) (Violation, bool) {
+	return s.detectViolation(msg, false)
+}
+
+func (s *Service) detectViolation(msg *telegram.Message, skipValidCommands bool) (Violation, bool) {
 	if msg == nil || msg.Chat == nil || msg.From == nil {
 		return Violation{}, false
 	}
-	if msg.From.IsBot || s.cache.IsImmune(msg.From.ID) || IsStopCommand(msg) {
+	if msg.From.IsBot || s.cache.IsImmune(msg.From.ID) {
+		return Violation{}, false
+	}
+	if skipValidCommands && s.MatchStopCommand(msg).IsValid() {
 		return Violation{}, false
 	}
 
@@ -111,7 +134,7 @@ func (s *Service) DetectViolation(msg *telegram.Message) (Violation, bool) {
 		if s.cache.IsRuleActive(key) {
 			return Violation{
 				RuleKey:       key,
-				ProtectedUser: cloneTelegramUser(reply.From),
+				ProtectedUser: cloneUser(reply.From),
 			}, true
 		}
 	}
@@ -145,15 +168,6 @@ func (s *Service) lookupProtectedUser(userID int64) *telegram.User {
 	}
 
 	return &telegram.User{ID: userID}
-}
-
-func cloneTelegramUser(user *telegram.User) *telegram.User {
-	if user == nil {
-		return nil
-	}
-
-	cloned := *user
-	return &cloned
 }
 
 func CollectKnownUsers(msg *telegram.Message) []KnownUser {

@@ -17,6 +17,7 @@ const (
 	restrictionEnabledText     = "Ограничение включено."
 	restrictionDisabledText    = "Ограничение снято."
 	restrictionUnavailableText = "Для этого пользователя ограничение недоступно."
+	userResolveFailedText      = "Не удалось определить пользователя."
 	violationWarningText       = "У вас нет права отвечать на сообщения этого пользователя."
 	violationMentionLabel      = "Пользователь"
 )
@@ -103,8 +104,9 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message) {
 		a.logger.Warn("update known users failed", "error", err, "message_id", msg.MessageID, "chat_id", chatID(msg))
 	}
 
-	if a.rules.IsStopCommand(msg) {
-		a.handleStopCommand(ctx, msg)
+	commandMatch := a.rules.MatchStopCommand(msg)
+	if commandMatch.IsCommand() {
+		a.handleStopCommand(ctx, msg, commandMatch)
 		return
 	}
 
@@ -125,11 +127,22 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message) {
 	a.sendViolationWarning(msg.Chat.ID, violation)
 }
 
-func (a *App) handleStopCommand(ctx context.Context, msg *telegram.Message) {
+func (a *App) handleStopCommand(ctx context.Context, msg *telegram.Message, commandMatch rules.StopCommandMatch) {
+	if !commandMatch.IsValid() {
+		if commandMatch.Status == rules.StopCommandUnknownTarget {
+			a.sendTemporaryMessage(msg.Chat.ID, userResolveFailedText, nil)
+		}
+		return
+	}
+
 	result, err := a.rules.HandleStopCommand(ctx, msg)
 	if err != nil {
 		a.logger.Warn("handle stop command failed", "error", err, "message_id", msg.MessageID, "chat_id", msg.Chat.ID)
 		return
+	}
+
+	if _, violation := a.rules.DetectCommandViolation(msg); violation {
+		a.deleteUserMessage(msg.Chat.ID, msg.MessageID, "stop_command_violation")
 	}
 
 	switch {
@@ -149,8 +162,6 @@ func (a *App) handleStopCommand(ctx context.Context, msg *telegram.Message) {
 		"enabled", result.Enabled,
 		"immune_target", result.BlockedUserImmune,
 	)
-
-	a.deleteMessage(msg.Chat.ID, msg.MessageID, "stop_command")
 }
 
 func (a *App) sendViolationWarning(chatID int64, violation rules.Violation) {
@@ -191,8 +202,16 @@ func (a *App) scheduleMessageDeletion(chatID, messageID int64, delay time.Durati
 	}
 
 	afterFunc(delay, func() {
-		a.deleteMessage(chatID, messageID, "ttl_cleanup")
+		a.deleteBotMessage(chatID, messageID, "ttl_cleanup")
 	})
+}
+
+func (a *App) deleteUserMessage(chatID, messageID int64, reason string) {
+	a.deleteMessage(chatID, messageID, reason)
+}
+
+func (a *App) deleteBotMessage(chatID, messageID int64, reason string) {
+	a.deleteMessage(chatID, messageID, reason)
 }
 
 func (a *App) deleteMessage(chatID, messageID int64, reason string) {

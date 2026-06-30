@@ -119,6 +119,32 @@ func (c *Cache) ProtectedIDsByUsername(username string) []int64 {
 	return result
 }
 
+func (c *Cache) KnownUsersByUsername(username string) []KnownUser {
+	normalized := normalizeUsername(username)
+	if normalized == "" {
+		return nil
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	index := c.usernameIndex[normalized]
+	if len(index) == 0 {
+		return nil
+	}
+
+	result := make([]KnownUser, 0, len(index))
+	for userID := range index {
+		user, ok := c.knownUsers[userID]
+		if !ok {
+			continue
+		}
+		result = append(result, user)
+	}
+
+	return result
+}
+
 func copyUserIDSet(source map[int64]struct{}) map[int64]struct{} {
 	result := make(map[int64]struct{}, len(source))
 	for userID := range source {

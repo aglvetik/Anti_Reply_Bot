@@ -10,6 +10,11 @@ The bot is intentionally narrow:
 - It deletes violating messages as fast as Telegram allows after the webhook update arrives.
 - It does not mute, ban, kick, or restrict users.
 
+Violation warnings are configurable:
+
+- `VIOLATION_WARNING_ENABLED=false` makes the bot silently delete violating messages without posting a warning.
+- `VIOLATION_WARNING_MENTION_TARGET=true` makes the temporary warning ping the protected user with a Telegram `text_mention`.
+
 ## What the bot does
 
 Rules are directional and scoped per chat.
@@ -95,6 +100,8 @@ Copy `.env.example` to `.env` and fill it in.
 | `WARNING_TTL_SECONDS` | no | `5` | Temporary warning and confirmation message TTL. |
 | `WEBHOOK_MAX_CONNECTIONS` | no | `40` | Used by `scripts/set-webhook.sh`. |
 | `IMMUNE_USER_IDS` | no | `5300889569` | Comma-separated Telegram user IDs. |
+| `VIOLATION_WARNING_ENABLED` | no | `true` | If `false`, the bot silently deletes violating messages and sends no warning. |
+| `VIOLATION_WARNING_MENTION_TARGET` | no | `true` | If `true`, violation warnings ping the protected user with a `text_mention`. |
 | `DROP_PENDING_UPDATES` | for webhook setup script | `true` | Used by `scripts/set-webhook.sh`. |
 
 ## Build
@@ -221,6 +228,7 @@ The bot uses structured `slog` JSON logs and intentionally does not log full mes
 - SQLite is used for startup loading, rule toggles, and known user persistence.
 - SQLite runs in WAL mode.
 - Username mention matching uses Telegram message entities and UTF-16-safe extraction.
+- Violation warnings can be sent either silently, as plain text, or with a `text_mention` targeting the protected user.
 
 ## Testing
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf16"
 
 	"telegram-stop-reply-bot/internal/rules"
 	"telegram-stop-reply-bot/internal/storage"
@@ -17,14 +18,23 @@ const (
 	restrictionDisabledText    = "Ограничение снято."
 	restrictionUnavailableText = "Для этого пользователя ограничение недоступно."
 	violationWarningText       = "У вас нет права отвечать на сообщения этого пользователя."
+	violationMentionLabel      = "Пользователь"
 )
 
+type telegramClient interface {
+	GetMe(ctx context.Context) (telegram.User, error)
+	DeleteMessage(ctx context.Context, chatID, messageID int64) error
+	SendMessage(ctx context.Context, chatID int64, text string) (telegram.Message, error)
+	SendMessageWithEntities(ctx context.Context, chatID int64, text string, entities []telegram.MessageEntity) (telegram.Message, error)
+}
+
 type App struct {
-	cfg    Config
-	logger *slog.Logger
-	client *telegram.Client
-	store  *storage.SQLiteStore
-	rules  *rules.Service
+	cfg       Config
+	logger    *slog.Logger
+	client    telegramClient
+	store     *storage.SQLiteStore
+	rules     *rules.Service
+	afterFunc func(time.Duration, func())
 }
 
 func New(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) {
@@ -61,11 +71,12 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*App, error) {
 	logger.Info("telegram bot authenticated", "bot_id", me.ID, "username", me.Username)
 
 	return &App{
-		cfg:    cfg,
-		logger: logger,
-		client: client,
-		store:  store,
-		rules:  service,
+		cfg:       cfg,
+		logger:    logger,
+		client:    client,
+		store:     store,
+		rules:     service,
+		afterFunc: func(delay time.Duration, fn func()) { time.AfterFunc(delay, fn) },
 	}, nil
 }
 
@@ -111,7 +122,7 @@ func (a *App) processMessage(ctx context.Context, msg *telegram.Message) {
 	)
 
 	a.deleteMessage(msg.Chat.ID, msg.MessageID, "violation")
-	a.sendTemporaryMessage(msg.Chat.ID, violationWarningText)
+	a.sendViolationWarning(msg.Chat.ID, violation)
 }
 
 func (a *App) handleStopCommand(ctx context.Context, msg *telegram.Message) {
@@ -123,11 +134,11 @@ func (a *App) handleStopCommand(ctx context.Context, msg *telegram.Message) {
 
 	switch {
 	case result.BlockedUserImmune:
-		a.sendTemporaryMessage(msg.Chat.ID, restrictionUnavailableText)
+		a.sendTemporaryMessage(msg.Chat.ID, restrictionUnavailableText, nil)
 	case result.Enabled:
-		a.sendTemporaryMessage(msg.Chat.ID, restrictionEnabledText)
+		a.sendTemporaryMessage(msg.Chat.ID, restrictionEnabledText, nil)
 	default:
-		a.sendTemporaryMessage(msg.Chat.ID, restrictionDisabledText)
+		a.sendTemporaryMessage(msg.Chat.ID, restrictionDisabledText, nil)
 	}
 
 	a.logger.Info(
@@ -142,25 +153,46 @@ func (a *App) handleStopCommand(ctx context.Context, msg *telegram.Message) {
 	a.deleteMessage(msg.Chat.ID, msg.MessageID, "stop_command")
 }
 
-func (a *App) sendTemporaryMessage(chatID int64, text string) {
+func (a *App) sendViolationWarning(chatID int64, violation rules.Violation) {
+	if !a.cfg.ViolationWarningEnabled {
+		return
+	}
+
+	text, entities := buildViolationWarning(violation, a.cfg.ViolationWarningMentionTarget)
+	a.sendTemporaryMessage(chatID, text, entities)
+}
+
+func (a *App) sendTemporaryMessage(chatID int64, text string, entities []telegram.MessageEntity) {
 	ctx, cancel := context.WithTimeout(context.Background(), telegramRequestTimeout)
 	defer cancel()
 
-	message, err := a.client.SendMessage(ctx, chatID, text)
+	var (
+		message telegram.Message
+		err     error
+	)
+
+	if len(entities) == 0 {
+		message, err = a.client.SendMessage(ctx, chatID, text)
+	} else {
+		message, err = a.client.SendMessageWithEntities(ctx, chatID, text, entities)
+	}
 	if err != nil {
 		a.logger.Warn("send temporary message failed", "error", err, "chat_id", chatID)
 		return
 	}
 
-	go a.deleteMessageAfter(chatID, message.MessageID, a.cfg.WarningTTL)
+	a.scheduleMessageDeletion(chatID, message.MessageID, a.cfg.WarningTTL)
 }
 
-func (a *App) deleteMessageAfter(chatID, messageID int64, delay time.Duration) {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
+func (a *App) scheduleMessageDeletion(chatID, messageID int64, delay time.Duration) {
+	afterFunc := a.afterFunc
+	if afterFunc == nil {
+		afterFunc = func(delay time.Duration, fn func()) { time.AfterFunc(delay, fn) }
+	}
 
-	<-timer.C
-	a.deleteMessage(chatID, messageID, "ttl_cleanup")
+	afterFunc(delay, func() {
+		a.deleteMessage(chatID, messageID, "ttl_cleanup")
+	})
 }
 
 func (a *App) deleteMessage(chatID, messageID int64, reason string) {
@@ -177,4 +209,31 @@ func chatID(msg *telegram.Message) int64 {
 		return 0
 	}
 	return msg.Chat.ID
+}
+
+func buildViolationWarning(violation rules.Violation, mentionTarget bool) (string, []telegram.MessageEntity) {
+	if !mentionTarget || violation.ProtectedUser == nil || violation.ProtectedUser.ID == 0 {
+		return violationWarningText, nil
+	}
+
+	mentionedUser := *violation.ProtectedUser
+	if mentionedUser.FirstName == "" {
+		mentionedUser.FirstName = violationMentionLabel
+	}
+
+	text := violationMentionLabel + ", " + violationWarningText
+	entities := []telegram.MessageEntity{
+		{
+			Type:   "text_mention",
+			Offset: 0,
+			Length: utf16Length(violationMentionLabel),
+			User:   &mentionedUser,
+		},
+	}
+
+	return text, entities
+}
+
+func utf16Length(text string) int {
+	return len(utf16.Encode([]rune(text)))
 }

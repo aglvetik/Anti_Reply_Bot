@@ -28,8 +28,9 @@ type apiResponse[T any] struct {
 }
 
 type SendMessageRequest struct {
-	ChatID int64  `json:"chat_id"`
-	Text   string `json:"text"`
+	ChatID   int64           `json:"chat_id"`
+	Text     string          `json:"text"`
+	Entities []MessageEntity `json:"entities,omitempty"`
 }
 
 type deleteMessageRequest struct {
@@ -90,10 +91,15 @@ func (c *Client) DeleteMessage(ctx context.Context, chatID, messageID int64) err
 }
 
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) (Message, error) {
+	return c.SendMessageWithEntities(ctx, chatID, text, nil)
+}
+
+func (c *Client) SendMessageWithEntities(ctx context.Context, chatID int64, text string, entities []MessageEntity) (Message, error) {
 	var result Message
 	if err := c.postJSON(ctx, "sendMessage", SendMessageRequest{
-		ChatID: chatID,
-		Text:   text,
+		ChatID:   chatID,
+		Text:     text,
+		Entities: entities,
 	}, &result); err != nil {
 		return Message{}, err
 	}

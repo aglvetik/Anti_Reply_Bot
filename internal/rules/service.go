@@ -24,7 +24,8 @@ type ToggleResult struct {
 }
 
 type Violation struct {
-	RuleKey RuleKey
+	RuleKey       RuleKey
+	ProtectedUser *telegram.User
 }
 
 func NewService(store Store, cache *Cache) *Service {
@@ -108,7 +109,10 @@ func (s *Service) DetectViolation(msg *telegram.Message) (Violation, bool) {
 			BlockedUserID:   senderID,
 		}
 		if s.cache.IsRuleActive(key) {
-			return Violation{RuleKey: key}, true
+			return Violation{
+				RuleKey:       key,
+				ProtectedUser: cloneTelegramUser(reply.From),
+			}, true
 		}
 	}
 
@@ -119,11 +123,37 @@ func (s *Service) DetectViolation(msg *telegram.Message) (Violation, bool) {
 			BlockedUserID:   senderID,
 		}
 		if s.cache.IsRuleActive(key) {
-			return Violation{RuleKey: key}, true
+			return Violation{
+				RuleKey:       key,
+				ProtectedUser: s.lookupProtectedUser(protectedUserID),
+			}, true
 		}
 	}
 
 	return Violation{}, false
+}
+
+func (s *Service) lookupProtectedUser(userID int64) *telegram.User {
+	if user, ok := s.cache.KnownUser(userID); ok {
+		return &telegram.User{
+			ID:        user.UserID,
+			IsBot:     user.IsBot,
+			FirstName: user.FirstName,
+			LastName:  user.LastName,
+			Username:  user.Username,
+		}
+	}
+
+	return &telegram.User{ID: userID}
+}
+
+func cloneTelegramUser(user *telegram.User) *telegram.User {
+	if user == nil {
+		return nil
+	}
+
+	cloned := *user
+	return &cloned
 }
 
 func CollectKnownUsers(msg *telegram.Message) []KnownUser {

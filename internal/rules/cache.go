@@ -90,6 +90,14 @@ func (c *Cache) UpsertKnownUser(user KnownUser) {
 	c.upsertKnownUserLocked(user)
 }
 
+func (c *Cache) KnownUser(userID int64) (KnownUser, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	user, ok := c.knownUsers[userID]
+	return user, ok
+}
+
 func (c *Cache) ProtectedIDsByUsername(username string) []int64 {
 	normalized := normalizeUsername(username)
 	if normalized == "" {

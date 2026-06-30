@@ -15,18 +15,22 @@ const (
 	defaultWarningTTLSeconds     = 5
 	defaultWebhookMaxConnections = 40
 	defaultImmuneUserIDs         = "5300889569"
+	defaultViolationWarning      = true
+	defaultViolationMention      = true
 )
 
 type Config struct {
-	BotToken              string
-	WebhookSecret         string
-	PublicWebhookURL      string
-	HTTPAddr              string
-	SQLitePath            string
-	LogLevel              string
-	WarningTTL            time.Duration
-	WebhookMaxConnections int
-	ImmuneUserIDs         map[int64]struct{}
+	BotToken                      string
+	WebhookSecret                 string
+	PublicWebhookURL              string
+	HTTPAddr                      string
+	SQLitePath                    string
+	LogLevel                      string
+	WarningTTL                    time.Duration
+	WebhookMaxConnections         int
+	ImmuneUserIDs                 map[int64]struct{}
+	ViolationWarningEnabled       bool
+	ViolationWarningMentionTarget bool
 }
 
 func LoadConfig() (Config, error) {
@@ -64,6 +68,24 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.ImmuneUserIDs = immuneUsers
 
+	violationWarningEnabled, err := parseBool(
+		"VIOLATION_WARNING_ENABLED",
+		envOrDefault("VIOLATION_WARNING_ENABLED", strconv.FormatBool(defaultViolationWarning)),
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ViolationWarningEnabled = violationWarningEnabled
+
+	violationWarningMentionTarget, err := parseBool(
+		"VIOLATION_WARNING_MENTION_TARGET",
+		envOrDefault("VIOLATION_WARNING_MENTION_TARGET", strconv.FormatBool(defaultViolationMention)),
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ViolationWarningMentionTarget = violationWarningMentionTarget
+
 	return cfg, nil
 }
 
@@ -83,6 +105,20 @@ func parsePositiveInt(envName, raw string) (int, error) {
 		return 0, fmt.Errorf("%s must be greater than zero", envName)
 	}
 	return value, nil
+}
+
+func parseBool(envName, raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1", "yes", "y", "on":
+		return true, nil
+	case "false", "0", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf(
+			"%s must be a boolean value: true/false/1/0/yes/no/y/n/on/off",
+			envName,
+		)
+	}
 }
 
 func parseUserIDSet(raw string) (map[int64]struct{}, error) {

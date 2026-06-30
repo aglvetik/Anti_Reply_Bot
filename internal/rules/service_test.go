@@ -158,6 +158,9 @@ func TestDetectViolationBlockedReply(t *testing.T) {
 	if violation.RuleKey != key {
 		t.Fatalf("unexpected violation key: got %+v want %+v", violation.RuleKey, key)
 	}
+	if violation.ProtectedUser == nil || violation.ProtectedUser.ID != 10 {
+		t.Fatalf("expected protected user to be resolved from reply target, got %+v", violation.ProtectedUser)
+	}
 }
 
 func TestDetectViolationBlockedUsernameMention(t *testing.T) {
@@ -179,13 +182,17 @@ func TestDetectViolationBlockedUsernameMention(t *testing.T) {
 	if violation.RuleKey != key {
 		t.Fatalf("unexpected violation key: got %+v want %+v", violation.RuleKey, key)
 	}
+	if violation.ProtectedUser == nil || violation.ProtectedUser.ID != 10 || violation.ProtectedUser.Username != "TargetUser" {
+		t.Fatalf("expected protected user to be resolved from cache, got %+v", violation.ProtectedUser)
+	}
 }
 
 func TestDetectViolationBlockedTextMention(t *testing.T) {
 	t.Parallel()
 
 	key := RuleKey{ChatID: 30, ProtectedUserID: 10, BlockedUserID: 20}
-	service := NewService(nil, NewCache([]RuleKey{key}, nil, nil))
+	knownUsers := []KnownUser{{UserID: 10, Username: "TargetUser", FirstName: "Target"}}
+	service := NewService(nil, NewCache([]RuleKey{key}, knownUsers, nil))
 
 	msg := newMessage(20, 30, "ping")
 	msg.Entities = []telegram.MessageEntity{
@@ -205,6 +212,9 @@ func TestDetectViolationBlockedTextMention(t *testing.T) {
 	}
 	if violation.RuleKey != key {
 		t.Fatalf("unexpected violation key: got %+v want %+v", violation.RuleKey, key)
+	}
+	if violation.ProtectedUser == nil || violation.ProtectedUser.ID != 10 || violation.ProtectedUser.FirstName != "Target" {
+		t.Fatalf("expected protected user to be resolved from cache, got %+v", violation.ProtectedUser)
 	}
 }
 
